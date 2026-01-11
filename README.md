@@ -87,13 +87,13 @@ print(f"Generated {n_tokens} tokens using {cache_mb:.2f} MB cache")
 
 ```bash
 # Basic benchmark comparison
-python examples/basic_benchmark.py
+python -m examples.basic_benchmark
 
 # Quantized cache demonstration
-python examples/quantized_cache.py
+python -m examples.quantized_cache
 
 # Comprehensive benchmark (all methods)
-python examples/comprehensive_benchmark.py
+python examples.comprehensive_benchmark
 ```
 
 ## Project Structure
@@ -194,11 +194,7 @@ pip install -e ".[dev]"
 pytest tests/
 
 # Format code
-black src/ examples/
-isort src/ examples/
-
-# Type checking
-mypy src/
+ruff src/ examples/
 
 # Linting
 ruff check src/ examples/
