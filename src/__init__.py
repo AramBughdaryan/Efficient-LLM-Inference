@@ -12,9 +12,10 @@ large language model inference, including:
 __version__ = "0.1.0"
 
 from .benchmarking.benchmarker import KVCacheBenchmarker
+from .benchmarking.mmlu import MMLUBenchmark
 from .benchmarking.summarization import SummarizationBenchmark
 from .core.config import BenchmarkConfig, CacheConfig, Config, QuantizationConfig
-from .datasets import load_cnn_dailymail, load_samsum, load_xsum
+from .datasets import load_cnn_dailymail, load_mmlu, load_samsum, load_xsum
 
 __all__ = [
     "Config",
@@ -23,8 +24,10 @@ __all__ = [
     "BenchmarkConfig",
     "KVCacheBenchmarker",
     "SummarizationBenchmark",
+    "MMLUBenchmark",
     "load_cnn_dailymail",
     "load_xsum",
     "load_samsum",
+    "load_mmlu",
     "__version__",
 ]

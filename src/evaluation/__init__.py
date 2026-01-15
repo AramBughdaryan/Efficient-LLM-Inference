@@ -1,5 +1,6 @@
 """Evaluation metrics module initialization."""
 
+from .accuracy import AccuracyEvaluator
 from .quality import (
     compute_perplexity,
     compute_sliding_window_nll,
@@ -14,4 +15,5 @@ __all__ = [
     "text_similarity",
     "token_agreement_rate",
     "RougeEvaluator",
+    "AccuracyEvaluator",
 ]
