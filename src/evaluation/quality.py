@@ -16,16 +16,16 @@ def compute_perplexity(
     max_length: int = 1024,
 ) -> Tuple[float, float]:
     """Compute perplexity using standard teacher-forcing.
-    
+
     This is the reference quality metric for language modeling.
-    
+
     Args:
         model: HuggingFace causal language model
         tokenizer: HuggingFace tokenizer
         texts: List of text strings to evaluate
         device: Device to run on
         max_length: Maximum sequence length
-        
+
     Returns:
         Tuple of (average NLL, perplexity)
     """
@@ -65,16 +65,16 @@ def compute_sliding_window_nll(
     device: str = "cuda",
 ) -> Tuple[float, float]:
     """Approximate NLL under sliding-window KV-cache.
-    
+
     Measures quality degradation due to context truncation.
-    
+
     Args:
         model: HuggingFace causal language model
         tokenizer: HuggingFace tokenizer
         text: Text string to evaluate
         window_size: Size of sliding window
         device: Device to run on
-        
+
     Returns:
         Tuple of (average NLL, perplexity)
     """
@@ -123,11 +123,11 @@ def compute_sliding_window_nll(
 
 def text_similarity(a: str, b: str) -> float:
     """Compute text similarity using sequence matcher.
-    
+
     Args:
         a: First text string
         b: Second text string
-        
+
     Returns:
         Similarity ratio between 0.0 and 1.0
     """
@@ -136,11 +136,11 @@ def text_similarity(a: str, b: str) -> float:
 
 def token_agreement_rate(tok_a: List[int], tok_b: List[int]) -> float:
     """Fraction of matching tokens at the same positions.
-    
+
     Args:
         tok_a: First token ID sequence
         tok_b: Second token ID sequence
-        
+
     Returns:
         Agreement rate between 0.0 and 1.0
     """

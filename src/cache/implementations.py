@@ -9,19 +9,21 @@ from ..core.utils import tensor_bytes
 
 class PagedKVCache:
     """Simulated paged KV cache for one transformer layer.
-    
+
     Stores K/V in fixed-size blocks along the sequence dimension.
     This simulates the paged attention memory layout.
-    
+
     Attributes:
         block_size: Number of tokens per block
         device: Device to store tensors on
         dtype: Data type for tensors
     """
 
-    def __init__(self, block_size: int = 64, device: str = "cuda", dtype: torch.dtype = torch.float16):
+    def __init__(
+        self, block_size: int = 64, device: str = "cuda", dtype: torch.dtype = torch.float16
+    ):
         """Initialize paged cache.
-        
+
         Args:
             block_size: Number of tokens per block
             device: Device to store tensors on
@@ -54,7 +56,7 @@ class PagedKVCache:
     @torch.no_grad()
     def append(self, k_1tok: torch.Tensor, v_1tok: torch.Tensor) -> None:
         """Append one token's KV.
-        
+
         Args:
             k_1tok: Key tensor of shape [B, H, 1, D]
             v_1tok: Value tensor of shape [B, H, 1, D]
@@ -80,7 +82,7 @@ class PagedKVCache:
     @torch.no_grad()
     def get_kv(self) -> Tuple[torch.Tensor, torch.Tensor]:
         """Get full K,V tensors by stitching blocks.
-        
+
         Returns:
             Tuple of (K, V) tensors of shape [B, H, T, D]
         """
@@ -121,11 +123,11 @@ class PagedKVCache:
 
 def trim_kv_sliding_window(past_key_values: tuple, window_size: int) -> tuple:
     """Trim KV tensors to keep only last `window_size` tokens.
-    
+
     Args:
         past_key_values: Tuple of (k, v) pairs
         window_size: Number of recent tokens to keep
-        
+
     Returns:
         Trimmed past_key_values tuple
     """
@@ -136,8 +138,6 @@ def trim_kv_sliding_window(past_key_values: tuple, window_size: int) -> tuple:
             v = v[:, :, -window_size:, :]
         trimmed.append((k, v))
     return tuple(trimmed)
-
-import torch
 
 
 def trim_kv_prefix_window(past_key_values, prefix_len: int, window_size: int):
@@ -245,7 +245,9 @@ def trim_kv_block_old(
     return tuple(trimmed)
 
 
-def trim_kv_budget_old(past_key_values, window_size: int, old_budget: int = 64, prefix_len: int = 0):
+def trim_kv_budget_old(
+    past_key_values, window_size: int, old_budget: int = 64, prefix_len: int = 0
+):
     """
     Keep:
       - optional prefix
@@ -274,7 +276,9 @@ def trim_kv_budget_old(past_key_values, window_size: int, old_budget: int = 64, 
             if old_len <= old_budget:
                 idx_old = torch.arange(prefix_len, tail_start, device=k.device)
             else:
-                idx_old = torch.linspace(prefix_len, tail_start - 1, steps=old_budget, device=k.device).long()
+                idx_old = torch.linspace(
+                    prefix_len, tail_start - 1, steps=old_budget, device=k.device
+                ).long()
                 idx_old = torch.unique_consecutive(idx_old)
 
             parts_k.append(k.index_select(2, idx_old))
@@ -288,19 +292,17 @@ def trim_kv_budget_old(past_key_values, window_size: int, old_budget: int = 64, 
     return tuple(trimmed)
 
 
-def chunk_summarize_kv(
-    past_key_values: tuple, chunk_size: int, keep_last: int
-) -> tuple:
+def chunk_summarize_kv(past_key_values: tuple, chunk_size: int, keep_last: int) -> tuple:
     """Compress older KV by replacing with mean-pooled chunk summaries.
-    
+
     Keep last `keep_last` tokens unchanged. Older tokens are grouped into
     chunks and mean-pooled.
-    
+
     Args:
         past_key_values: Tuple of (k, v) pairs per layer
         chunk_size: Number of tokens to pool into one summary
         keep_last: Number of recent tokens to keep exact
-        
+
     Returns:
         Compressed past_key_values tuple
     """

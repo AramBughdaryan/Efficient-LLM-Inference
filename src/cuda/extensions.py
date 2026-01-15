@@ -11,10 +11,10 @@ _kvq_ext: Optional[object] = None
 
 def build_cuda_extension(verbose: bool = True) -> Optional[object]:
     """Build CUDA extension for INT4/INT8 dequantization.
-    
+
     Args:
         verbose: Whether to print build information
-        
+
     Returns:
         Compiled extension module if CUDA is available, None otherwise
     """
@@ -22,10 +22,10 @@ def build_cuda_extension(verbose: bool = True) -> Optional[object]:
         if verbose:
             print("No CUDA device -> skipping extension build.")
         return None
-    
+
     from torch.utils.cpp_extension import load_inline
-    
-    cuda_src = r'''
+
+    cuda_src = r"""
     #include <torch/extension.h>
     #include <cuda.h>
     #include <cuda_runtime.h>
@@ -117,7 +117,7 @@ def build_cuda_extension(verbose: bool = True) -> Optional[object]:
         m.def("dequant_int8_to_fp16", &dequant_int8_to_fp16, "Dequant INT8 -> FP16 (CUDA)");
         m.def("dequant_int4_packed_to_fp16", &dequant_int4_packed_to_fp16, "Dequant packed INT4 -> FP16 (CUDA)");
     }
-    '''
+    """
 
     ext = load_inline(
         name="kvq_ext",
@@ -128,16 +128,16 @@ def build_cuda_extension(verbose: bool = True) -> Optional[object]:
         with_cuda=True,
         verbose=verbose,
     )
-    
+
     if verbose:
         print(f"CUDA extension built: {ext}")
-    
+
     return ext
 
 
 def get_cuda_extension() -> Optional[object]:
     """Get the CUDA extension, building it if necessary.
-    
+
     Returns:
         The compiled CUDA extension or None if CUDA is unavailable
     """

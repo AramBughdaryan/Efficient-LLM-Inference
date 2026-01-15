@@ -11,14 +11,14 @@ def quantize_int8_per_tensor(
     x: torch.Tensor, eps: float = 1e-8
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Symmetric per-tensor INT8 quantization.
-    
+
     Quantizes tensor to int8 using symmetric quantization:
     q = clamp(round(x/scale), -127, 127)
-    
+
     Args:
         x: Input tensor to quantize
         eps: Small epsilon to avoid division by zero
-        
+
     Returns:
         Tuple of (quantized tensor, scale factor)
     """
@@ -34,13 +34,13 @@ def quantize_int4_per_tensor_packed(
     x: torch.Tensor, eps: float = 1e-8
 ) -> Tuple[torch.Tensor, torch.Tensor, int]:
     """Symmetric per-tensor INT4 quantization with packing.
-    
+
     Quantizes tensor to int4 (range [-8, 7]) and packs two values per uint8.
-    
+
     Args:
         x: Input tensor to quantize
         eps: Small epsilon to avoid division by zero
-        
+
     Returns:
         Tuple of (packed tensor, scale factor, original last dimension)
     """
@@ -69,19 +69,19 @@ def dequantize_int8_per_tensor(
     q: torch.Tensor, scale: torch.Tensor, out_dtype: torch.dtype
 ) -> torch.Tensor:
     """Dequantize INT8 tensor to target dtype.
-    
+
     Uses CUDA kernel if available for fp16, otherwise falls back to Python.
-    
+
     Args:
         q: Quantized int8 tensor
         scale: Scale factor used during quantization
         out_dtype: Target output dtype
-        
+
     Returns:
         Dequantized tensor
     """
     kvq_ext = get_cuda_extension()
-    
+
     if kvq_ext is not None and q.is_cuda and out_dtype == torch.float16:
         # Use fast CUDA kernel
         return kvq_ext.dequant_int8_to_fp16(q.contiguous(), float(scale))
@@ -97,20 +97,20 @@ def dequantize_int4_per_tensor_packed(
     out_dtype: torch.dtype,
 ) -> torch.Tensor:
     """Dequantize packed INT4 tensor to target dtype.
-    
+
     Uses CUDA kernel if available for fp16, otherwise falls back to Python.
-    
+
     Args:
         packed: Packed uint8 tensor (2 int4 values per byte)
         scale: Scale factor used during quantization
         orig_last_dim: Original size of last dimension before padding
         out_dtype: Target output dtype
-        
+
     Returns:
         Dequantized tensor
     """
     kvq_ext = get_cuda_extension()
-    
+
     if kvq_ext is not None and packed.is_cuda and out_dtype == torch.float16:
         # Use fast CUDA kernel
         out = kvq_ext.dequant_int4_packed_to_fp16(
@@ -135,12 +135,12 @@ def dequantize_int4_per_tensor_packed(
 
 class QuantizedLayerKV:
     """Stores quantized KV cache for one transformer layer.
-    
+
     Supports multiple quantization modes:
     - "int8": Both K and V in INT8
     - "int4": Both K and V in INT4 (packed)
     - "mixed": K in INT8, V in INT4 (trades quality vs compression)
-    
+
     Attributes:
         mode: Quantization mode
         device: Device to store tensors on
@@ -151,7 +151,7 @@ class QuantizedLayerKV:
         self, mode: str = "int8", device: str = "cuda", compute_dtype: torch.dtype = torch.float16
     ):
         """Initialize quantized layer cache.
-        
+
         Args:
             mode: Quantization mode ("int8", "int4", or "mixed")
             device: Device to store tensors on
@@ -173,7 +173,7 @@ class QuantizedLayerKV:
     @torch.no_grad()
     def append(self, k_1tok: torch.Tensor, v_1tok: torch.Tensor) -> None:
         """Append one token's key-value pair.
-        
+
         Args:
             k_1tok: Key tensor of shape [B, H, 1, D]
             v_1tok: Value tensor of shape [B, H, 1, D]
@@ -212,7 +212,7 @@ class QuantizedLayerKV:
     @torch.no_grad()
     def get_kv(self) -> Tuple[torch.Tensor, torch.Tensor]:
         """Get full dequantized K,V tensors.
-        
+
         Returns:
             Tuple of (K, V) tensors of shape [B, H, T, D]
         """
@@ -232,13 +232,19 @@ class QuantizedLayerKV:
         elif self.mode == "int4":
             k_list = [
                 dequantize_int4_per_tensor_packed(
-                    self.k_store[i], self.k_scales[i], self.k_meta[i], self.compute_dtype  # type: ignore
+                    self.k_store[i],
+                    self.k_scales[i],
+                    self.k_meta[i],
+                    self.compute_dtype,  # type: ignore
                 )
                 for i in range(len(self.k_store))
             ]
             v_list = [
                 dequantize_int4_per_tensor_packed(
-                    self.v_store[i], self.v_scales[i], self.v_meta[i], self.compute_dtype  # type: ignore
+                    self.v_store[i],
+                    self.v_scales[i],
+                    self.v_meta[i],
+                    self.compute_dtype,  # type: ignore
                 )
                 for i in range(len(self.v_store))
             ]
@@ -250,7 +256,10 @@ class QuantizedLayerKV:
             ]
             v_list = [
                 dequantize_int4_per_tensor_packed(
-                    self.v_store[i], self.v_scales[i], self.v_meta[i], self.compute_dtype  # type: ignore
+                    self.v_store[i],
+                    self.v_scales[i],
+                    self.v_meta[i],
+                    self.compute_dtype,  # type: ignore
                 )
                 for i in range(len(self.v_store))
             ]
@@ -261,7 +270,7 @@ class QuantizedLayerKV:
 
     def estimated_bytes(self) -> int:
         """Estimate memory footprint of stored quantized KV.
-        
+
         Returns:
             Approximate bytes used (excludes Python list overhead)
         """
@@ -283,9 +292,9 @@ class QuantizedLayerKV:
 
 class QuantizedKVCache:
     """Multi-layer quantized KV cache container.
-    
+
     Holds quantized caches for all transformer layers.
-    
+
     Attributes:
         layers: List of QuantizedLayerKV instances
     """
@@ -298,7 +307,7 @@ class QuantizedKVCache:
         compute_dtype: torch.dtype = torch.float16,
     ):
         """Initialize multi-layer quantized cache.
-        
+
         Args:
             n_layers: Number of transformer layers
             mode: Quantization mode
@@ -313,7 +322,7 @@ class QuantizedKVCache:
     @torch.no_grad()
     def append_from_past(self, past_key_values: tuple) -> None:
         """Append the last token from model's past_key_values.
-        
+
         Args:
             past_key_values: Tuple of (k, v) pairs from model output
         """
@@ -323,7 +332,7 @@ class QuantizedKVCache:
     @torch.no_grad()
     def init_from_prompt_past(self, past_key_values: tuple) -> None:
         """Initialize cache from full prompt output.
-        
+
         Args:
             past_key_values: Tuple of (k, v) pairs from model output
         """
@@ -335,7 +344,7 @@ class QuantizedKVCache:
     @torch.no_grad()
     def to_past_key_values(self) -> tuple:
         """Convert to HuggingFace-compatible past_key_values format.
-        
+
         Returns:
             Tuple of (k, v) pairs for all layers
         """
@@ -347,7 +356,7 @@ class QuantizedKVCache:
 
     def estimated_bytes(self) -> int:
         """Total estimated memory footprint across all layers.
-        
+
         Returns:
             Total bytes used
         """
