@@ -11,6 +11,10 @@ from ..cache import (
     PagedKVCache,
     chunk_summarize_kv,
     trim_kv_sliding_window,
+    trim_kv_prefix_window,
+    trim_kv_strided,
+    trim_kv_block_old,
+    trim_kv_budget_old,
 )
 from ..quantization import QuantizedKVCache
 from ..core.utils import get_cpu_mem_mb, get_gpu_peak_mb, mb, reset_gpu_peak
@@ -53,153 +57,6 @@ class KVCacheBenchmarker:
         self.model = model
         self.tokenizer = tokenizer
         self.device = device
-
-    # ---------- KV trimming helpers (sparsity) ----------
-
-    def _trim_kv_prefix_window(self, past_key_values, prefix_len: int, window_size: int):
-        """Keep first prefix_len + last window_size tokens (legacy tuple KV)."""
-        trimmed = []
-        for k, v in past_key_values:
-            seq_len = k.size(2)
-            if seq_len <= prefix_len + window_size:
-                trimmed.append((k, v))
-                continue
-            k_new = torch.cat([k[:, :, :prefix_len, :], k[:, :, -window_size:, :]], dim=2)
-            v_new = torch.cat([v[:, :, :prefix_len, :], v[:, :, -window_size:, :]], dim=2)
-            trimmed.append((k_new, v_new))
-        return tuple(trimmed)
-
-    def _trim_kv_strided(self, past_key_values, window_size: int, stride: int, prefix_len: int = 0):
-        """
-        Keep:
-          - optional prefix (first prefix_len)
-          - dense tail (last window_size)
-          - from older region, keep every `stride` token
-        """
-        assert stride >= 1
-        trimmed = []
-        for k, v in past_key_values:
-            seq_len = k.size(2)
-            if seq_len <= prefix_len + window_size:
-                trimmed.append((k, v))
-                continue
-
-            tail_start = max(prefix_len, seq_len - window_size)
-
-            parts_k, parts_v = [], []
-            if prefix_len > 0:
-                parts_k.append(k[:, :, :prefix_len, :])
-                parts_v.append(v[:, :, :prefix_len, :])
-
-            # older region [prefix_len, tail_start)
-            if tail_start > prefix_len:
-                idx_old = torch.arange(prefix_len, tail_start, step=stride, device=k.device)
-                parts_k.append(k.index_select(2, idx_old))
-                parts_v.append(v.index_select(2, idx_old))
-
-            # tail region [tail_start, seq_len)
-            parts_k.append(k[:, :, tail_start:, :])
-            parts_v.append(v[:, :, tail_start:, :])
-
-            trimmed.append((torch.cat(parts_k, dim=2), torch.cat(parts_v, dim=2)))
-        return tuple(trimmed)
-
-    def _trim_kv_block_old(
-        self,
-        past_key_values,
-        window_size: int,
-        block_size: int = 64,
-        keep_per_block: int = 8,
-        prefix_len: int = 0,
-    ):
-        """
-        Block-based sparsity for older context:
-          - keep optional prefix
-          - keep dense tail (last window_size)
-          - for older tokens (excluding prefix), partition into blocks of size block_size
-            and keep the last `keep_per_block` tokens from each block.
-        """
-        assert block_size >= 1
-        assert 1 <= keep_per_block <= block_size
-
-        trimmed = []
-        for k, v in past_key_values:
-            seq_len = k.size(2)
-            if seq_len <= prefix_len + window_size:
-                trimmed.append((k, v))
-                continue
-
-            tail_start = max(prefix_len, seq_len - window_size)
-
-            parts_k, parts_v = [], []
-            if prefix_len > 0:
-                parts_k.append(k[:, :, :prefix_len, :])
-                parts_v.append(v[:, :, :prefix_len, :])
-
-            # older region: [prefix_len, tail_start)
-            old_len = tail_start - prefix_len
-            if old_len > 0:
-                idx_list = []
-                start = prefix_len
-                while start < tail_start:
-                    end = min(start + block_size, tail_start)
-                    keep_start = max(start, end - keep_per_block)
-                    idx_list.append(torch.arange(keep_start, end, device=k.device))
-                    start = end
-
-                if idx_list:
-                    idx_old = torch.cat(idx_list, dim=0)
-                    parts_k.append(k.index_select(2, idx_old))
-                    parts_v.append(v.index_select(2, idx_old))
-
-            # tail region
-            parts_k.append(k[:, :, tail_start:, :])
-            parts_v.append(v[:, :, tail_start:, :])
-
-            trimmed.append((torch.cat(parts_k, dim=2), torch.cat(parts_v, dim=2)))
-        return tuple(trimmed)
-
-    def _trim_kv_budget_old(self, past_key_values, window_size: int, old_budget: int = 64, prefix_len: int = 0):
-        """
-        Keep:
-          - optional prefix
-          - dense tail (last window_size)
-          - a fixed budget of `old_budget` tokens sampled uniformly from older region
-        """
-        assert old_budget >= 0
-
-        trimmed = []
-        for k, v in past_key_values:
-            seq_len = k.size(2)
-            if seq_len <= prefix_len + window_size:
-                trimmed.append((k, v))
-                continue
-
-            tail_start = max(prefix_len, seq_len - window_size)
-
-            parts_k, parts_v = [], []
-            if prefix_len > 0:
-                parts_k.append(k[:, :, :prefix_len, :])
-                parts_v.append(v[:, :, :prefix_len, :])
-
-            # older region indices: [prefix_len, tail_start)
-            old_len = tail_start - prefix_len
-            if old_len > 0 and old_budget > 0:
-                if old_len <= old_budget:
-                    idx_old = torch.arange(prefix_len, tail_start, device=k.device)
-                else:
-                    idx_old = torch.linspace(prefix_len, tail_start - 1, steps=old_budget, device=k.device).long()
-                    idx_old = torch.unique_consecutive(idx_old)
-
-                parts_k.append(k.index_select(2, idx_old))
-                parts_v.append(v.index_select(2, idx_old))
-
-            # tail region
-            parts_k.append(k[:, :, tail_start:, :])
-            parts_v.append(v[:, :, tail_start:, :])
-
-            trimmed.append((torch.cat(parts_k, dim=2), torch.cat(parts_v, dim=2)))
-        return tuple(trimmed)
 
 
     # ---------- Generation methods ----------
@@ -363,7 +220,7 @@ class KVCacheBenchmarker:
 
         # convert, trim, convert back
         pkv_tuple = out.past_key_values.to_legacy_cache() if hasattr(out.past_key_values, "to_legacy_cache") else out.past_key_values
-        pkv_tuple = self._trim_kv_prefix_window(pkv_tuple, prefix_len=prefix_len, window_size=window_size)
+        pkv_tuple = trim_kv_prefix_window(pkv_tuple, prefix_len=prefix_len, window_size=window_size)
         pkv = DynamicCache.from_legacy_cache(pkv_tuple)
 
         for _ in range(max_new_tokens):
@@ -374,7 +231,7 @@ class KVCacheBenchmarker:
             logits = out.logits[:, -1, :]
 
             pkv_tuple = out.past_key_values.to_legacy_cache() if hasattr(out.past_key_values, "to_legacy_cache") else out.past_key_values
-            pkv_tuple = self._trim_kv_prefix_window(pkv_tuple, prefix_len=prefix_len, window_size=window_size)
+            pkv_tuple = trim_kv_prefix_window(pkv_tuple, prefix_len=prefix_len, window_size=window_size)
             pkv = DynamicCache.from_legacy_cache(pkv_tuple)
 
         n_new = generated.size(-1) - input_ids.size(-1)
@@ -398,7 +255,7 @@ class KVCacheBenchmarker:
         generated = input_ids.clone()
 
         pkv_tuple = out.past_key_values.to_legacy_cache() if hasattr(out.past_key_values, "to_legacy_cache") else out.past_key_values
-        pkv_tuple = self._trim_kv_strided(pkv_tuple, window_size=window_size, stride=stride, prefix_len=prefix_len)
+        pkv_tuple = trim_kv_strided(pkv_tuple, window_size=window_size, stride=stride, prefix_len=prefix_len)
         pkv = DynamicCache.from_legacy_cache(pkv_tuple)
 
         for _ in range(max_new_tokens):
@@ -409,7 +266,7 @@ class KVCacheBenchmarker:
             logits = out.logits[:, -1, :]
 
             pkv_tuple = out.past_key_values.to_legacy_cache() if hasattr(out.past_key_values, "to_legacy_cache") else out.past_key_values
-            pkv_tuple = self._trim_kv_strided(pkv_tuple, window_size=window_size, stride=stride, prefix_len=prefix_len)
+            pkv_tuple = trim_kv_strided(pkv_tuple, window_size=window_size, stride=stride, prefix_len=prefix_len)
             pkv = DynamicCache.from_legacy_cache(pkv_tuple)
 
         n_new = generated.size(-1) - input_ids.size(-1)
@@ -434,7 +291,7 @@ class KVCacheBenchmarker:
         generated = input_ids.clone()
 
         pkv_tuple = out.past_key_values.to_legacy_cache() if hasattr(out.past_key_values, "to_legacy_cache") else out.past_key_values
-        pkv_tuple = self._trim_kv_block_old(
+        pkv_tuple = trim_kv_block_old(
             pkv_tuple,
             window_size=window_size,
             block_size=block_size,
@@ -451,7 +308,7 @@ class KVCacheBenchmarker:
             logits = out.logits[:, -1, :]
 
             pkv_tuple = out.past_key_values.to_legacy_cache() if hasattr(out.past_key_values, "to_legacy_cache") else out.past_key_values
-            pkv_tuple = self._trim_kv_block_old(
+            pkv_tuple = trim_kv_block_old(
                 pkv_tuple,
                 window_size=window_size,
                 block_size=block_size,
@@ -481,7 +338,7 @@ class KVCacheBenchmarker:
         generated = input_ids.clone()
 
         pkv_tuple = out.past_key_values.to_legacy_cache() if hasattr(out.past_key_values, "to_legacy_cache") else out.past_key_values
-        pkv_tuple = self._trim_kv_budget_old(
+        pkv_tuple = trim_kv_budget_old(
             pkv_tuple,
             window_size=window_size,
             old_budget=old_budget,
@@ -497,7 +354,7 @@ class KVCacheBenchmarker:
             logits = out.logits[:, -1, :]
 
             pkv_tuple = out.past_key_values.to_legacy_cache() if hasattr(out.past_key_values, "to_legacy_cache") else out.past_key_values
-            pkv_tuple = self._trim_kv_budget_old(
+            pkv_tuple = trim_kv_budget_old(
                 pkv_tuple,
                 window_size=window_size,
                 old_budget=old_budget,

@@ -137,6 +137,156 @@ def trim_kv_sliding_window(past_key_values: tuple, window_size: int) -> tuple:
         trimmed.append((k, v))
     return tuple(trimmed)
 
+import torch
+
+
+def trim_kv_prefix_window(past_key_values, prefix_len: int, window_size: int):
+    """Keep first prefix_len + last window_size tokens (legacy tuple KV)."""
+    trimmed = []
+    for k, v in past_key_values:
+        seq_len = k.size(2)
+        if seq_len <= prefix_len + window_size:
+            trimmed.append((k, v))
+            continue
+        k_new = torch.cat([k[:, :, :prefix_len, :], k[:, :, -window_size:, :]], dim=2)
+        v_new = torch.cat([v[:, :, :prefix_len, :], v[:, :, -window_size:, :]], dim=2)
+        trimmed.append((k_new, v_new))
+    return tuple(trimmed)
+
+
+def trim_kv_strided(past_key_values, window_size: int, stride: int, prefix_len: int = 0):
+    """
+    Keep:
+      - optional prefix (first prefix_len)
+      - dense tail (last window_size)
+      - from older region, keep every `stride` token
+    """
+    assert stride >= 1
+    trimmed = []
+    for k, v in past_key_values:
+        seq_len = k.size(2)
+        if seq_len <= prefix_len + window_size:
+            trimmed.append((k, v))
+            continue
+
+        tail_start = max(prefix_len, seq_len - window_size)
+
+        parts_k, parts_v = [], []
+        if prefix_len > 0:
+            parts_k.append(k[:, :, :prefix_len, :])
+            parts_v.append(v[:, :, :prefix_len, :])
+
+        # older region [prefix_len, tail_start)
+        if tail_start > prefix_len:
+            idx_old = torch.arange(prefix_len, tail_start, step=stride, device=k.device)
+            parts_k.append(k.index_select(2, idx_old))
+            parts_v.append(v.index_select(2, idx_old))
+
+        # tail region [tail_start, seq_len)
+        parts_k.append(k[:, :, tail_start:, :])
+        parts_v.append(v[:, :, tail_start:, :])
+
+        trimmed.append((torch.cat(parts_k, dim=2), torch.cat(parts_v, dim=2)))
+    return tuple(trimmed)
+
+
+def trim_kv_block_old(
+    past_key_values,
+    window_size: int,
+    block_size: int = 64,
+    keep_per_block: int = 8,
+    prefix_len: int = 0,
+):
+    """
+    Block-based sparsity for older context:
+      - keep optional prefix
+      - keep dense tail (last window_size)
+      - for older tokens (excluding prefix), partition into blocks of size block_size
+        and keep the last `keep_per_block` tokens from each block.
+    """
+    assert block_size >= 1
+    assert 1 <= keep_per_block <= block_size
+
+    trimmed = []
+    for k, v in past_key_values:
+        seq_len = k.size(2)
+        if seq_len <= prefix_len + window_size:
+            trimmed.append((k, v))
+            continue
+
+        tail_start = max(prefix_len, seq_len - window_size)
+
+        parts_k, parts_v = [], []
+        if prefix_len > 0:
+            parts_k.append(k[:, :, :prefix_len, :])
+            parts_v.append(v[:, :, :prefix_len, :])
+
+        # older region: [prefix_len, tail_start)
+        old_len = tail_start - prefix_len
+        if old_len > 0:
+            idx_list = []
+            start = prefix_len
+            while start < tail_start:
+                end = min(start + block_size, tail_start)
+                keep_start = max(start, end - keep_per_block)
+                idx_list.append(torch.arange(keep_start, end, device=k.device))
+                start = end
+
+            if idx_list:
+                idx_old = torch.cat(idx_list, dim=0)
+                parts_k.append(k.index_select(2, idx_old))
+                parts_v.append(v.index_select(2, idx_old))
+
+        # tail region
+        parts_k.append(k[:, :, tail_start:, :])
+        parts_v.append(v[:, :, tail_start:, :])
+
+        trimmed.append((torch.cat(parts_k, dim=2), torch.cat(parts_v, dim=2)))
+    return tuple(trimmed)
+
+
+def trim_kv_budget_old(past_key_values, window_size: int, old_budget: int = 64, prefix_len: int = 0):
+    """
+    Keep:
+      - optional prefix
+      - dense tail (last window_size)
+      - a fixed budget of `old_budget` tokens sampled uniformly from older region
+    """
+    assert old_budget >= 0
+
+    trimmed = []
+    for k, v in past_key_values:
+        seq_len = k.size(2)
+        if seq_len <= prefix_len + window_size:
+            trimmed.append((k, v))
+            continue
+
+        tail_start = max(prefix_len, seq_len - window_size)
+
+        parts_k, parts_v = [], []
+        if prefix_len > 0:
+            parts_k.append(k[:, :, :prefix_len, :])
+            parts_v.append(v[:, :, :prefix_len, :])
+
+        # older region indices: [prefix_len, tail_start)
+        old_len = tail_start - prefix_len
+        if old_len > 0 and old_budget > 0:
+            if old_len <= old_budget:
+                idx_old = torch.arange(prefix_len, tail_start, device=k.device)
+            else:
+                idx_old = torch.linspace(prefix_len, tail_start - 1, steps=old_budget, device=k.device).long()
+                idx_old = torch.unique_consecutive(idx_old)
+
+            parts_k.append(k.index_select(2, idx_old))
+            parts_v.append(v.index_select(2, idx_old))
+
+        # tail region
+        parts_k.append(k[:, :, tail_start:, :])
+        parts_v.append(v[:, :, tail_start:, :])
+
+        trimmed.append((torch.cat(parts_k, dim=2), torch.cat(parts_v, dim=2)))
+    return tuple(trimmed)
+
 
 def chunk_summarize_kv(
     past_key_values: tuple, chunk_size: int, keep_last: int
