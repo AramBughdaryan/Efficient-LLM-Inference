@@ -9,6 +9,10 @@ This library implements multiple state-of-the-art KV cache optimization strategi
 ### 🔧 Cache Strategies
 - **Full KV Cache**: Standard caching with complete history
 - **Sliding Window**: Memory-efficient fixed-size context window
+- **Prefix + Sliding Window**: Preserves a fixed prefix while applying a sliding window to recent tokens  
+- **Strided Cache**: Retains prefix and recent tokens while sampling older history at a fixed stride  
+- **Block-Sparse Cache**: Partitions older tokens into blocks and retains a limited number of tokens per block  
+- **Budget-Based Cache**: Enforces a fixed KV budget by uniformly subsampling older tokens while keeping recent context dense
 - **Paged Attention**: Block-based memory allocation (simulated)
 - **Chunk-Summary**: Compress old context with mean-pooling
 
